@@ -4,7 +4,7 @@ require('dotenv').config();
 // Import dependencies
 const express = require('express');
 const cors = require('cors');
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb');
 
 // Initialize Express app
 const app = express();
@@ -14,13 +14,29 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Debugging middleware - logs all requests (MUST COME BEFORE ROUTES!)
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    
+    if (Object.keys(req.query).length > 0) {
+        console.log('Query parameters:', req.query);
+    }
+    
+    if (Object.keys(req.params).length > 0) {
+        console.log('Route parameters:', req.params);
+    }
+    
+    next();
+});
+
 // MongoDB connection setup
 let db;
+let client;
 const uri = process.env.MONGODB_URI;
-const client = new MongoClient(uri);
 
 async function connectDB() {
     try {
+        client = new MongoClient(uri);
         await client.connect();
         db = client.db('learningDB'); // Create/use database
         console.log('✅ Connected to MongoDB');
@@ -63,17 +79,19 @@ app.get('/', (req, res) => {
     });
 });
 
-// Start server and connect to DB
-app.listen(PORT, async () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    await connectDB();
-});
-
 // ============ API ENDPOINTS ============
 
 // GET all products
 app.get('/api/products', async (req, res) => {
     try {
+        // Check if DB is connected
+        if (!db) {
+            return res.status(503).json({
+                success: false,
+                error: 'Database not connected'
+            });
+        }
+        
         const products = db.collection('products');
         const query = {};
         
@@ -112,8 +130,15 @@ app.get('/api/products', async (req, res) => {
 // GET product by ID
 app.get('/api/products/:id', async (req, res) => {
     try {
+        // Check if DB is connected
+        if (!db) {
+            return res.status(503).json({
+                success: false,
+                error: 'Database not connected'
+            });
+        }
+        
         const products = db.collection('products');
-        const { ObjectId } = require('mongodb');
         
         // Check if ID is valid
         if (!ObjectId.isValid(req.params.id)) {
@@ -149,6 +174,14 @@ app.get('/api/products/:id', async (req, res) => {
 // GET products by category (alternative route)
 app.get('/api/categories/:category/products', async (req, res) => {
     try {
+        // Check if DB is connected
+        if (!db) {
+            return res.status(503).json({
+                success: false,
+                error: 'Database not connected'
+            });
+        }
+        
         const products = db.collection('products');
         const result = await products.find({ 
             category: req.params.category 
@@ -185,62 +218,6 @@ app.get('/api/headers-example', (req, res) => {
     });
 });
 
-// Debugging middleware - logs all requests
-app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
-    
-    if (Object.keys(req.query).length > 0) {
-        console.log('Query parameters:', req.query);
-    }
-    
-    if (Object.keys(req.params).length > 0) {
-        console.log('Route parameters:', req.params);
-    }
-    
-    next();
-});
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const { connectDB } = require('./src/config/database');
-const requestLogger = require('./src/middleware/logger');
-const productRoutes = require('./src/routes/productRoutes');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(requestLogger);
-
-// Routes
-app.get('/', (req, res) => {
-    res.json({
-        message: '🎉 Welcome to the Learning Activity API!',
-        endpoints: {
-            root: 'GET /',
-            products: 'GET /api/products',
-            productById: 'GET /api/products/:id',
-            productsByCategory: 'GET /api/products/category/:category'
-        }
-    });
-});
-
-// API Routes
-app.use('/api/products', productRoutes);
-
-// Headers example
-app.get('/api/headers-example', (req, res) => {
-    res.json({
-        success: true,
-        yourHeaders: {
-            userAgent: req.headers['user-agent'],
-            customHeader: req.headers['x-custom-header']
-        }
-    });
-});
-
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error(err.stack);
@@ -250,7 +227,24 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Start server
+// 404 handler for undefined routes
+app.use('*', (req, res) => {
+    res.status(404).json({
+        success: false,
+        error: 'Route not found'
+    });
+});
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+    if (client) {
+        await client.close();
+        console.log('MongoDB connection closed');
+    }
+    process.exit(0);
+});
+
+// Start server and connect to DB
 async function startServer() {
     try {
         await connectDB();
